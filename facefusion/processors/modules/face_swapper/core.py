@@ -9,7 +9,7 @@ import numpy
 import facefusion.choices
 import facefusion.jobs.job_manager
 import facefusion.jobs.job_store
-from facefusion import config, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, inference_manager, logger, state_manager, translator, video_manager, voice_extractor
+from facefusion import config, face_map, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, inference_manager, logger, state_manager, translator, video_manager, voice_extractor
 from facefusion.common_helper import get_first, get_middle, is_macos
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.execution import has_execution_provider
@@ -587,6 +587,16 @@ def pre_check() -> bool:
 
 
 def pre_process(mode : ProcessMode) -> bool:
+	if face_map.has_face_map():
+		for source_path in face_map.get_face_map_paths().values():
+			if face_map.resolve_source_face(source_path) is None:
+				logger.error(translator.get('no_source_face_detected') + translator.get('exclamation_mark'), __name__)
+				return False
+		if mode in [ 'output', 'preview' ] and not is_image(state_manager.get_item('target_path')) and not is_video(state_manager.get_item('target_path')):
+			logger.error(translator.get('choose_image_or_video_target') + translator.get('exclamation_mark'), __name__)
+			return False
+		return True
+
 	if not has_image(state_manager.get_item('source_paths')):
 		logger.error(translator.get('choose_image_source') + translator.get('exclamation_mark'), __name__)
 		return False
@@ -807,6 +817,29 @@ def extract_source_face(source_vision_frames : List[VisionFrame]) -> Optional[Fa
 	return average_face_identity(source_faces)
 
 
+def process_frame_with_face_map(reference_vision_frame : VisionFrame, target_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, target_faces : List[Face]) -> VisionFrame:
+	"""Swap each target face with the source photo mapped to its slot."""
+	face_map_paths = face_map.get_face_map_paths()
+	reference_faces = face_map.index_reference_faces(reference_vision_frame)
+	face_distance = state_manager.get_item('reference_face_distance')
+
+	for target_face in target_faces:
+		slot_index = face_map.match_face_slot(target_face, reference_faces, face_distance)
+		source_path = face_map_paths.get(slot_index) if slot_index is not None else None
+
+		if not source_path:
+			continue
+		source_face = face_map.resolve_source_face(source_path)
+		source_vision_frame = face_map.resolve_source_frame(source_path)
+
+		if source_face is None or source_vision_frame is None:
+			continue
+		scaled_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
+		temp_vision_frame = swap_face(source_face, scaled_face, source_vision_frame, temp_vision_frame)
+
+	return temp_vision_frame
+
+
 def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	reference_vision_frame = inputs.get('reference_vision_frame')
 	source_vision_frames = inputs.get('source_vision_frames')
@@ -815,8 +848,16 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	temp_vision_mask = inputs.get('temp_vision_mask')
 
 	target_vision_frame = get_middle(target_vision_frames)
-	source_face = extract_source_face(source_vision_frames)
 	target_faces = select_faces(reference_vision_frame, source_vision_frames, target_vision_frames)
+
+	if face_map.has_face_map():
+		target_faces = face_map.select_all_faces(target_vision_frames)
+
+		if target_faces:
+			temp_vision_frame = process_frame_with_face_map(reference_vision_frame, target_vision_frame, temp_vision_frame, target_faces)
+		return temp_vision_frame, temp_vision_mask
+
+	source_face = extract_source_face(source_vision_frames)
 
 	if source_face and target_faces:
 		source_vision_frame = get_first(source_vision_frames)

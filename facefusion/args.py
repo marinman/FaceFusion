@@ -7,6 +7,17 @@ from facefusion.types import ApplyStateItem, Args
 from facefusion.vision import detect_video_fps
 
 
+def apply_face_map_args(args : Args, apply_state_item : ApplyStateItem) -> None:
+	face_map_paths = {}
+
+	for pair in args.get('face_map') or []:
+		slot, _, source_path = pair.partition('=')
+
+		if slot.strip().isdigit() and source_path.strip():
+			face_map_paths[int(slot) - 1] = source_path.strip()
+	apply_state_item('face_map_paths', face_map_paths)
+
+
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('command', args.get('command'))
 	apply_state_item('temp_path', args.get('temp_path'))
@@ -31,6 +42,7 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('face_selector_gender', args.get('face_selector_gender'))
 	apply_state_item('face_selector_race', args.get('face_selector_race'))
 	apply_state_item('reference_face_position', args.get('reference_face_position'))
+	apply_face_map_args(args, apply_state_item)
 	apply_state_item('reference_face_distance', args.get('reference_face_distance'))
 	apply_state_item('reference_frame_number', args.get('reference_frame_number'))
 	apply_state_item('face_tracker_score', args.get('face_tracker_score'))

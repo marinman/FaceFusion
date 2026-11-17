@@ -5,3 +5,11 @@ __pycache__
 .idea
 .jobs
 .vscode
+.venv
+FaceFusion.icns
+mac-app/FaceFusionNative
+*.orig
+.DS_Store
+mac-app/facefusion-app
+mac-app/*.bak
+*.bak

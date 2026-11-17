@@ -24,6 +24,12 @@ FACE_SELECTOR_RACE_DROPDOWN : Optional[gradio.Dropdown] = None
 FACE_SELECTOR_AGE_RANGE_SLIDER : Optional[RangeSlider] = None
 REFERENCE_FACE_POSITION_GALLERY : Optional[gradio.Gallery] = None
 REFERENCE_FACE_DISTANCE_SLIDER : Optional[gradio.Slider] = None
+FACE_MAP_IMAGE : Optional[gradio.Image] = None
+FACE_SELECTOR_HINT : Optional[gradio.Markdown] = None
+
+SELECTED_COLOR = (80, 220, 60)
+OTHER_COLOR = (170, 170, 170)
+HINT_TEXT = '### 🎯 Pick the face to replace\nClick a face below. It turns **green** in the frame map; that person gets your new face. Gray faces are left alone.'
 
 
 def render() -> None:
@@ -34,10 +40,14 @@ def render() -> None:
 	global FACE_SELECTOR_AGE_RANGE_SLIDER
 	global REFERENCE_FACE_POSITION_GALLERY
 	global REFERENCE_FACE_DISTANCE_SLIDER
+	global FACE_MAP_IMAGE
+	global FACE_SELECTOR_HINT
 
 	reference_face_gallery_options : ComponentOptions =\
 	{
-		'label': translator.get('uis.reference_face_gallery'),
+		'label': 'Faces in this frame (click one)',
+		'columns': 6,
+		'height': 'auto',
 		'object_fit': 'cover',
 		'allow_preview': False,
 		'elem_classes': 'box-face-selector',
@@ -56,7 +66,16 @@ def render() -> None:
 		choices = facefusion.choices.face_selector_modes,
 		value = state_manager.get_item('face_selector_mode')
 	)
+	is_reference = 'reference' in state_manager.get_item('face_selector_mode')
+	FACE_SELECTOR_HINT = gradio.Markdown(HINT_TEXT, visible = is_reference)
 	REFERENCE_FACE_POSITION_GALLERY = gradio.Gallery(**reference_face_gallery_options)
+	FACE_MAP_IMAGE = gradio.Image(
+		label = 'Frame map: green = will be replaced',
+		value = build_face_map(),
+		interactive = False,
+		show_download_button = False,
+		visible = is_reference
+	)
 	with gradio.Group():
 		with gradio.Row():
 			FACE_SELECTOR_ORDER_DROPDOWN = gradio.Dropdown(
@@ -102,7 +121,7 @@ def render() -> None:
 
 
 def listen() -> None:
-	FACE_SELECTOR_MODE_DROPDOWN.change(update_face_selector_mode, inputs = FACE_SELECTOR_MODE_DROPDOWN, outputs = [ REFERENCE_FACE_POSITION_GALLERY, REFERENCE_FACE_DISTANCE_SLIDER ])
+	FACE_SELECTOR_MODE_DROPDOWN.change(update_face_selector_mode, inputs = FACE_SELECTOR_MODE_DROPDOWN, outputs = [ REFERENCE_FACE_POSITION_GALLERY, REFERENCE_FACE_DISTANCE_SLIDER, FACE_MAP_IMAGE, FACE_SELECTOR_HINT ])
 	FACE_SELECTOR_ORDER_DROPDOWN.change(update_face_selector_order, inputs = FACE_SELECTOR_ORDER_DROPDOWN, outputs = REFERENCE_FACE_POSITION_GALLERY)
 	FACE_SELECTOR_GENDER_DROPDOWN.change(update_face_selector_gender, inputs = FACE_SELECTOR_GENDER_DROPDOWN, outputs = REFERENCE_FACE_POSITION_GALLERY)
 	FACE_SELECTOR_RACE_DROPDOWN.change(update_face_selector_race, inputs = FACE_SELECTOR_RACE_DROPDOWN, outputs = REFERENCE_FACE_POSITION_GALLERY)
@@ -113,6 +132,11 @@ def listen() -> None:
 	if preview_frame_slider:
 		REFERENCE_FACE_POSITION_GALLERY.select(update_reference_frame_number, inputs = preview_frame_slider)
 		REFERENCE_FACE_POSITION_GALLERY.select(update_reference_face_position)
+		REFERENCE_FACE_POSITION_GALLERY.select(select_face_and_update_map, inputs = preview_frame_slider, outputs = FACE_MAP_IMAGE)
+		for method in [ 'change', 'release' ]:
+			getattr(preview_frame_slider, method)(update_face_map_for_frame, inputs = preview_frame_slider, outputs = FACE_MAP_IMAGE, show_progress = 'hidden')
+	else:
+		REFERENCE_FACE_POSITION_GALLERY.select(select_face_and_update_map, outputs = FACE_MAP_IMAGE)
 
 	for ui_component in get_ui_components(
 	[
@@ -123,6 +147,11 @@ def listen() -> None:
 			getattr(ui_component, method)(clear_reference_frame_number)
 			getattr(ui_component, method)(clear_reference_face_position)
 			getattr(ui_component, method)(update_reference_position_gallery, outputs = REFERENCE_FACE_POSITION_GALLERY)
+			getattr(ui_component, method)(update_face_map_for_frame, outputs = FACE_MAP_IMAGE)
+
+	for ui_component in get_ui_components([ 'source_image' ]):
+		for method in [ 'change', 'clear' ]:
+			getattr(ui_component, method)(update_face_map_for_frame, outputs = FACE_MAP_IMAGE)
 
 	for ui_component in get_ui_components(
 	[
@@ -142,14 +171,52 @@ def listen() -> None:
 			getattr(preview_frame_slider, method)(update_reference_position_gallery, inputs = preview_frame_slider, outputs = REFERENCE_FACE_POSITION_GALLERY, show_progress = 'hidden')
 
 
-def update_face_selector_mode(face_selector_mode : FaceSelectorMode) -> Tuple[gradio.Gallery, gradio.Slider]:
+def update_face_selector_mode(face_selector_mode : FaceSelectorMode) -> Tuple[gradio.Gallery, gradio.Slider, gradio.Image, gradio.Markdown]:
 	state_manager.set_item('face_selector_mode', face_selector_mode)
-	if face_selector_mode == 'many':
-		return gradio.Gallery(visible = False), gradio.Slider(visible = False)
-	if face_selector_mode == 'one':
-		return gradio.Gallery(visible = False), gradio.Slider(visible = False)
-	if face_selector_mode == 'reference':
-		return gradio.Gallery(visible = True), gradio.Slider(visible = True)
+	is_reference = face_selector_mode == 'reference'
+	return gradio.Gallery(visible = is_reference), gradio.Slider(visible = is_reference), gradio.Image(value = build_face_map() if is_reference else None, visible = is_reference), gradio.Markdown(visible = is_reference)
+
+
+def select_face_and_update_map(event : gradio.SelectData, frame_number : Optional[int] = None) -> gradio.Image:
+	state_manager.set_item('reference_face_position', event.index)
+	if frame_number is not None:
+		state_manager.set_item('reference_frame_number', frame_number)
+	return gradio.Image(value = build_face_map(frame_number))
+
+
+def update_face_map_for_frame(frame_number : Optional[int] = None) -> gradio.Image:
+	return gradio.Image(value = build_face_map(frame_number))
+
+
+def build_face_map(frame_number : Optional[int] = None) -> Optional[VisionFrame]:
+	target_path = state_manager.get_item('target_path')
+	if is_image(target_path):
+		frame = read_static_image(target_path)
+	elif is_video(target_path):
+		if frame_number is None:
+			frame_number = state_manager.get_item('reference_frame_number') or 0
+		frame = read_video_frame(target_path, frame_number)
+	else:
+		return None
+	if frame is None:
+		return None
+	source_faces = get_many_faces(read_static_images(filter_image_paths(state_manager.get_item('source_paths'))))
+	faces = sort_and_filter_faces(source_faces, get_many_faces([ frame ]))
+	selected = state_manager.get_item('reference_face_position') or 0
+	canvas = frame.copy()
+	thickness = max(2, frame.shape[1] // 300)
+	scale = max(0.6, frame.shape[1] / 900)
+	for index, face in enumerate(faces):
+		start_x, start_y, end_x, end_y = map(int, face.bounding_box)
+		color = SELECTED_COLOR if index == selected else OTHER_COLOR
+		color = (color[2], color[1], color[0])
+		cv2.rectangle(canvas, (start_x, start_y), (end_x, end_y), color, thickness * (2 if index == selected else 1))
+		label = f'{index + 1}  REPLACE' if index == selected else str(index + 1)
+		(text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+		label_y = max(text_h + 8, start_y - 6)
+		cv2.rectangle(canvas, (start_x, label_y - text_h - 8), (start_x + text_w + 10, label_y + 4), color, -1)
+		cv2.putText(canvas, label, (start_x + 5, label_y - 2), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness, cv2.LINE_AA)
+	return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
 
 def update_face_selector_order(face_analyser_order : FaceSelectorOrder) -> gradio.Gallery:
@@ -220,7 +287,7 @@ def extract_gallery_frames(source_vision_frames : List[VisionFrame], target_visi
 	target_faces = get_many_faces([ target_vision_frame ])
 	target_faces = sort_and_filter_faces(source_faces, target_faces)
 
-	for target_face in target_faces:
+	for index, target_face in enumerate(target_faces):
 		start_x, start_y, end_x, end_y = map(int, target_face.bounding_box)
 		padding_x = int((end_x - start_x) * 0.25)
 		padding_y = int((end_y - start_y) * 0.25)
@@ -231,6 +298,6 @@ def extract_gallery_frames(source_vision_frames : List[VisionFrame], target_visi
 		crop_vision_frame = target_vision_frame[start_y:end_y, start_x:end_x]
 		crop_vision_frame = fit_cover_frame(crop_vision_frame, (128, 128))
 		crop_vision_frame = cv2.cvtColor(crop_vision_frame, cv2.COLOR_BGR2RGB)
-		gallery_vision_frames.append(crop_vision_frame)
+		gallery_vision_frames.append((crop_vision_frame, f'Face {index + 1}'))
 
 	return gallery_vision_frames
